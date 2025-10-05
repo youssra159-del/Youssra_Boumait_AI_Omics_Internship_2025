@@ -1,0 +1,270 @@
+# =====================================================================
+#               AI and Biotechnology / Bioinformatics
+# =====================================================================
+#              AI and Omics Research Internship (2025)
+# ---------------------------------------------------------------------
+#             Module II: Introduction to Genomics Data Analysis
+# ---------------------------------------------------------------------
+#                 Microarray Data Analysis (Illumina Platform)
+# =====================================================================
+# Topics:
+# 1. Quality Control (QC)
+# 2. Quantile Normalization
+# 3. Pre-processing and Filtering
+# 4. Preparing Phenotype Data
+# =====================================================================
+
+#######################################################################
+#### 0. Install and Load Required Packages ####
+#######################################################################
+
+if (!requireNamespace("BiocManager", quietly = TRUE)) 
+  install.packages("BiocManager")
+
+# Bioconductor packages
+BiocManager::install(c("GEOquery","limma","Biobase","arrayQualityMetrics"), ask = FALSE)
+
+# CRAN package
+install.packages("dplyr")
+
+# Load libraries
+library(GEOquery)             # Download GEO datasets
+library(limma)                # Illumina microarray pre-processing
+library(Biobase)              # ExpressionSet structure
+library(arrayQualityMetrics)  # QC reports
+library(dplyr)                # Data manipulation
+
+
+#######################################################################
+#### 1. Download Series Matrix Data (processed GEO data) ####
+#######################################################################
+
+# GSE19435 : study on Illumina microarray
+gse <- getGEO("GSE19435", GSEMatrix = TRUE)
+
+# Check how many objects
+length(gse) 
+
+# Extract the first matrix
+expr_matrix <- exprs(gse[[1]])         # expression data
+feature_data <- fData(gse[[1]])        # probe annotations
+phenotype_data <- pData(gse[[1]])      # sample metadata
+
+# Check
+dim(expr_matrix)
+head(phenotype_data)
+
+
+#######################################################################
+#### 2. Download raw data (Illumina TXT files) ####
+#######################################################################
+
+dir.create("Raw_Data", showWarnings = FALSE)
+getGEOSuppFiles("GSE19435", baseDir = "Raw_Data", makeDirectory = TRUE)
+
+# Extract the TAR file
+untar("Raw_Data/GSE19435/GSE19435_RAW.tar", exdir = "Raw_Data/GSE19435/untar")
+
+# List extracted files
+txt_files <- list.files("Raw_Data/GSE19435/untar", 
+                        full.names = TRUE, 
+                        pattern = "\\.txt.gz$")
+length(txt_files)   # How many raw files?
+
+#######################################################################
+#### 3. Read raw Illumina data ####
+#######################################################################
+
+illumina_raw <- read.ilmn(files = txt_files,
+                          expr = "VALUE",
+                          other.columns = "Detection PVal")
+
+# Check content
+head(illumina_raw$E[, 1:3])         # Raw intensities
+head(illumina_raw$other$Detection)  # Detection p-values
+
+
+#######################################################################
+#### 4. Quality Control before normalization ####
+#######################################################################
+
+# Build an ExpressionSet for QC
+eset_raw <- ExpressionSet(assayData = illumina_raw$E)
+
+# Run QC report
+arrayQualityMetrics(expressionset = eset_raw,
+                    outdir = "Results/QC_Raw_Data",
+                    force = TRUE,
+                    do.logtransform = TRUE)
+
+# => Result: a folder "Results/QC_Raw_Data" with an index.html file
+# Open it in a browser to visualize outliers.
+
+
+#######################################################################
+#### 5. Quantile Normalization ####
+#######################################################################
+
+# Load required packages
+library(limma)
+library(arrayQualityMetrics)
+library(matrixStats)
+
+# Perform quantile normalization
+expr_matrix_norm <- normalizeBetweenArrays(exprs(eset_raw), method = "quantile")
+
+# Put back into an ExpressionSet
+eset_norm <- eset_raw
+exprs(eset_norm) <- expr_matrix_norm
+
+# Visual check: boxplot before / after
+png("boxplot_before_after_normalization.png", width=1400, height=700)
+par(mfrow = c(1, 2))
+boxplot(exprs(eset_raw), las = 2, main = "Before normalization", col = "lightblue", outline = FALSE)
+boxplot(exprs(eset_norm), las = 2, main = "After quantile normalization", col = "lightgreen", outline = FALSE)
+par(mfrow = c(1, 1))
+dev.off()
+
+# Display on screen
+par(mfrow = c(1,2))
+boxplot(exprs(eset_raw), las = 2, main = "Before normalization", col = "lightblue", outline = FALSE)
+boxplot(exprs(eset_norm), las = 2, main = "After normalization", col = "lightgreen", outline = FALSE)
+par(mfrow = c(1,1))
+
+# Save in PNG
+png("boxplot_before_after_normalization.png", width=1400, height=700)
+par(mfrow = c(1,2))
+boxplot(exprs(eset_raw), las = 2, main = "Before normalization", col = "lightblue", outline = FALSE)
+boxplot(exprs(eset_norm), las = 2, main = "After normalization", col = "lightgreen", outline = FALSE)
+par(mfrow = c(1,1))
+dev.off()
+
+
+#######################################################################
+#### 6. Soft Filtering: Remove low-intensity probes ####
+#######################################################################
+
+# Compute median intensity per probe
+row_median <- rowMedians(as.matrix(exprs(eset_norm)))
+
+# Visualize intensity distribution
+png("intensity_histogram.png", width=800, height=600)
+hist(row_median,
+     breaks = 100,
+     freq = FALSE,
+     main = "Distribution of median intensities",
+     xlab = "Median intensity",
+     col = "lightgray",
+     border = "black")
+threshold <- 3.5
+abline(v = threshold, col = "red", lwd = 2)
+dev.off()
+
+# Keep only probes above threshold
+keep <- row_median > threshold
+eset_filt <- eset_norm[keep, ]
+
+# Summary
+cat("Total number of probes:", nrow(exprs(eset_norm)), "\n")
+cat("Number of probes kept after filtering:", nrow(exprs(eset_filt)), "\n")
+
+# Final boxplot to verify
+png("boxplot_after_filtering.png", width=1400, height=700)
+boxplot(exprs(eset_filt),
+        las = 2,
+        main = "After filtering low intensities",
+        col = "lightcoral",
+        outline = FALSE)
+dev.off()
+
+# Optional log2 visualization
+hist(log2(row_median + 1),
+     breaks = 100,
+     freq = FALSE,
+     main = "Log2 distribution of median intensities",
+     xlab = "log2(Median intensity)",
+     col = "lightgray",
+     border = "black")
+
+abline(v = log2(threshold + 1), col = "red", lwd = 2)
+
+
+#######################################################################
+#### 6. Soft Filtering (corrected version with log2) ####
+#######################################################################
+
+# log2 transformation to stabilize variance
+exprs(eset_norm) <- log2(exprs(eset_norm) + 1)
+
+# Visual check: histogram after log2
+row_median <- rowMedians(as.matrix(exprs(eset_norm)))
+
+hist(row_median,
+     breaks = 100,
+     freq = FALSE,
+     main = "Log2 distribution of median intensities",
+     xlab = "log2(Median intensity)",
+     col = "lightgray",
+     border = "black")
+
+# Choose threshold in log2 scale (e.g. 5 ≈ raw intensity ~32)
+threshold <- 5
+abline(v = threshold, col = "red", lwd = 2)
+
+# Filtering
+keep <- row_median > threshold
+eset_filt <- eset_norm[keep, ]
+
+# Summary
+cat("Total number of probes:", nrow(exprs(eset_norm)), "\n")
+cat("Number of probes kept after filtering:", nrow(exprs(eset_filt)), "\n")
+
+# Boxplot after filtering
+boxplot(exprs(eset_filt),
+        las = 2,
+        main = "After filtering (log2 > 5)",
+        col = "lightcoral",
+        outline = FALSE)
+
+
+
+#######################################################################
+#### 7. Phenotype data preparation ####
+#######################################################################
+
+# Check metadata
+head(phenotype_data)
+
+# Create factor of experimental groups
+# (based on the column "source_name_ch1" or another relevant field)
+table(phenotype_data$source_name_ch1)
+
+# Example: grouping samples
+groups <- factor(phenotype_data$source_name_ch1,
+                 levels = c(
+                   "Whole blood from healthy control", 
+                   "Whole blood from patient with active TB before treatment",
+                   "Whole blood from patient with active TB 2 months after treatment started",
+                   "Whole blood from patient with active TB 12 months after treatment started (i.e. after treatment completed)"
+                 ))
+
+# Check
+levels(groups)
+table(groups)
+
+# Add group info to ExpressionSet
+pData(eset_filt)$group <- groups
+
+#######################################################################
+#### 8. Pipeline summary ####
+#######################################################################
+cat("Initial QC: see folder Results/QC_Raw_Data\n")
+cat("QC after normalization: see Results/QC_Normalized_Data\n")
+cat("Total number of probes after filtering:", nrow(eset_filt), "\n")
+cat("Defined groups:", levels(groups), "\n")
+
+n_before <- nrow(exprs(eset_norm))
+cat("Number of probes before filtering:", n_before, "\n")
+
+# Save final data
+saveRDS(eset_filt, file = "Results/Illumina_Preprocessed.rds")
